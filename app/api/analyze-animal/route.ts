@@ -18,6 +18,14 @@ function parseErrorMessage(err: any): { is503: boolean; cleanMessage: string } {
   let is503 = false;
   let cleanMessage = raw;
 
+  if (raw.includes("GEMINI_API_KEY environment variable is missing") || raw.includes("GEMINI_API_KEY")) {
+    return {
+      is503: false,
+      cleanMessage:
+        "GEMINI_API_KEY is missing. If deploying to Vercel: go to Project Settings > Environment Variables, add GEMINI_API_KEY with your Google Gemini API key, then click Redeploy.",
+    };
+  }
+
   try {
     const parsed = JSON.parse(raw);
     if (parsed?.error) {

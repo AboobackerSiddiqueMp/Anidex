@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   X,
   Volume2,
@@ -19,6 +19,7 @@ import {
 import { AnimalDexEntry } from "@/types/anidex";
 import { VoiceBriefingPlayer } from "./VoiceBriefingPlayer";
 import { soundEffects } from "@/lib/sound-effects";
+import { audioPlayer } from "@/lib/audio-player";
 
 interface DexDetailModalProps {
   entry: AnimalDexEntry;
@@ -35,6 +36,19 @@ export function DexDetailModal({
 }: DexDetailModalProps) {
   const [isFav, setIsFav] = useState(entry.isFavorite || false);
   const [copied, setCopied] = useState(false);
+
+  // Stop any audio narration immediately when closing or unmounting modal
+  useEffect(() => {
+    return () => {
+      audioPlayer.stop();
+    };
+  }, []);
+
+  const handleClose = () => {
+    soundEffects.playButtonBeep();
+    audioPlayer.stop();
+    onClose();
+  };
 
   const handleFavoriteClick = () => {
     soundEffects.playButtonBeep();
@@ -117,10 +131,7 @@ export function DexDetailModal({
             </button>
 
             <button
-              onClick={() => {
-                soundEffects.playButtonBeep();
-                onClose();
-              }}
+              onClick={handleClose}
               className="p-2 rounded-lg bg-black/40 hover:bg-black/60 text-white border border-white/20 transition-colors cursor-pointer"
               title="Close Entry"
             >
@@ -357,10 +368,7 @@ export function DexDetailModal({
             Recorded in AniDex Field Log
           </span>
           <button
-            onClick={() => {
-              soundEffects.playButtonBeep();
-              onClose();
-            }}
+            onClick={handleClose}
             className="px-6 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-white font-pokedex text-xs tracking-wider border border-slate-600 cursor-pointer"
           >
             RETURN TO SCANNER

@@ -8,6 +8,7 @@ import { AnalyzingView } from "@/components/anidex/AnalyzingView";
 import { ScanResultCard } from "@/components/anidex/ScanResultCard";
 import { GalleryView } from "@/components/anidex/GalleryView";
 import { DexDetailModal } from "@/components/anidex/DexDetailModal";
+import { GlobalAudioBar } from "@/components/anidex/GlobalAudioBar";
 import { AnimalDexEntry } from "@/types/anidex";
 import { soundEffects } from "@/lib/sound-effects";
 import { audioPlayer } from "@/lib/audio-player";
@@ -141,7 +142,26 @@ export default function Home() {
     }
   };
 
+  // Stop audio playback if navigating between tabs or if user leaves/minimizes browser
+  React.useEffect(() => {
+    audioPlayer.stop();
+  }, [activeTab]);
+
+  React.useEffect(() => {
+    const handleVisibility = () => {
+      if (document.hidden) {
+        audioPlayer.stop();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibility);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibility);
+      audioPlayer.stop();
+    };
+  }, []);
+
   const handleReturnToViewfinder = () => {
+    audioPlayer.stop();
     setScannerSubState("viewfinder");
     setResultEntry(null);
     setCapturedImage(null);
@@ -150,7 +170,14 @@ export default function Home() {
   return (
     <div className="min-h-screen bg-[#090d14] text-slate-100 flex flex-col selection:bg-cyan-500 selection:text-black">
       {/* Intro Screen - Kept intact as user confirmed "first order is nice" */}
-      {showIntro && <IntroScreen onEnter={() => setShowIntro(false)} />}
+      {showIntro && (
+        <IntroScreen
+          onEnter={() => {
+            audioPlayer.stop();
+            setShowIntro(false);
+          }}
+        />
+      )}
 
       {/* Main Application Shell */}
       <div className="flex-1 flex flex-col">
@@ -158,13 +185,17 @@ export default function Home() {
         <AnidexHeader
           activeTab={activeTab}
           onTabChange={(tab) => {
+            audioPlayer.stop();
             setActiveTab(tab);
             if (tab === "scanner" && scannerSubState === "result") {
               setScannerSubState("viewfinder");
             }
           }}
           galleryCount={entries.length}
-          onOpenIntro={() => setShowIntro(true)}
+          onOpenIntro={() => {
+            audioPlayer.stop();
+            setShowIntro(true);
+          }}
           isScanning={isScanning}
         />
 
@@ -194,6 +225,7 @@ export default function Home() {
                 <ScanResultCard
                   entry={resultEntry}
                   onViewDetails={() => {
+                    audioPlayer.stop();
                     setIsNewlyDiscovered(false);
                     setSelectedEntry(resultEntry);
                   }}
@@ -206,12 +238,14 @@ export default function Home() {
             <GalleryView
               entries={entries}
               onSelectEntry={(entry) => {
+                audioPlayer.stop();
                 setIsNewlyDiscovered(false);
                 setSelectedEntry(entry);
               }}
               onDeleteEntry={handleDeleteEntry}
               onToggleFavorite={handleToggleFavorite}
               onGoToScanner={() => {
+                audioPlayer.stop();
                 setActiveTab("scanner");
                 setScannerSubState("viewfinder");
               }}
@@ -225,6 +259,7 @@ export default function Home() {
         <DexDetailModal
           entry={selectedEntry}
           onClose={() => {
+            audioPlayer.stop();
             setSelectedEntry(null);
             setIsNewlyDiscovered(false);
           }}
@@ -232,6 +267,9 @@ export default function Home() {
           autoPlayVoice={isNewlyDiscovered}
         />
       )}
+
+      {/* Persistent Audio Controls Bar - shows when voice is synthesizing or playing */}
+      <GlobalAudioBar />
     </div>
   );
 }

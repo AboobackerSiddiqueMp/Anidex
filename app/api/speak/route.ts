@@ -16,9 +16,8 @@ export async function POST(req: NextRequest) {
     // Limit text length to prevent timeouts
     const sanitizedText = text.slice(0, 750);
 
-    const ai = getGeminiClient();
-
     try {
+      const ai = getGeminiClient();
       const response = await ai.models.generateContent({
         model: "gemini-3.1-flash-tts-preview",
         contents: [

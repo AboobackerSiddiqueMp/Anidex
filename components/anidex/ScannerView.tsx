@@ -32,6 +32,7 @@ export function ScannerView({
   const [cameraActive, setCameraActive] = useState(false);
   const [facingMode, setFacingMode] = useState<"environment" | "user">("environment");
   const [cameraError, setCameraError] = useState<string | null>(null);
+  const [isRequestingCamera, setIsRequestingCamera] = useState(false);
   const [torchOn, setTorchOn] = useState(false);
   const [targetLocked, setTargetLocked] = useState(false);
 
@@ -40,61 +41,99 @@ export function ScannerView({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
-  // Initialize camera stream
-  useEffect(() => {
-    let isCancelled = false;
+  // Initialize camera stream with multi-tiered fallback for desktop and mobile
+  const startCamera = async (targetFacing: "environment" | "user") => {
+    if (typeof window === "undefined" || !navigator.mediaDevices?.getUserMedia) {
+      setCameraError("Camera API is not supported in this browser environment.");
+      return;
+    }
 
-    async function initCamera() {
+    setIsRequestingCamera(true);
+
+    // Stop any existing tracks
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+    }
+
+    const constraintOptions: MediaStreamConstraints[] = [
+      // 1. Ideal constraints (works on mobile back camera and modern laptops)
+      {
+        video: {
+          facingMode: { ideal: targetFacing },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
+        audio: false,
+      },
+      // 2. Strict facing mode fallback
+      {
+        video: { facingMode: targetFacing },
+        audio: false,
+      },
+      // 3. Any available video camera (crucial for desktops/laptops without rear cameras)
+      {
+        video: true,
+        audio: false,
+      },
+    ];
+
+    let acquiredStream: MediaStream | null = null;
+    let lastErr: any = null;
+
+    for (const constraints of constraintOptions) {
       try {
-        if (streamRef.current) {
-          streamRef.current.getTracks().forEach((track) => track.stop());
-        }
-
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-          throw new Error("Camera API is not supported in this browser environment.");
-        }
-
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: facingMode,
-            width: { ideal: 1920 },
-            height: { ideal: 1080 },
-          },
-          audio: false,
-        });
-
-        if (isCancelled) {
-          stream.getTracks().forEach((t) => t.stop());
-          return;
-        }
-
-        streamRef.current = stream;
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          videoRef.current.play().catch(() => {});
-        }
-        setCameraActive(true);
-        setCameraError(null);
+        acquiredStream = await navigator.mediaDevices.getUserMedia(constraints);
+        if (acquiredStream) break;
       } catch (err: any) {
-        if (!isCancelled) {
-          console.warn("Camera feed notice:", err?.message);
-          setCameraError(
-            "Live camera feed unavailable. You can upload an animal photo using the gallery button below!"
-          );
-          setCameraActive(false);
-        }
+        lastErr = err;
       }
     }
 
-    initCamera();
+    setIsRequestingCamera(false);
+
+    if (acquiredStream) {
+      streamRef.current = acquiredStream;
+
+      if (videoRef.current) {
+        videoRef.current.srcObject = acquiredStream;
+        try {
+          await videoRef.current.play();
+        } catch {
+          // Handled via onLoadedMetadata as well
+        }
+      }
+
+      setCameraActive(true);
+      setCameraError(null);
+    } else {
+      console.warn("Camera stream could not be started:", lastErr?.message || lastErr);
+      setCameraActive(false);
+      setCameraError(
+        "Could not access live camera. Please grant camera permission or use the photo upload option!"
+      );
+    }
+  };
+
+  // Auto-start camera on component mount or when facing mode changes
+  useEffect(() => {
+    startCamera(facingMode);
 
     return () => {
-      isCancelled = true;
       if (streamRef.current) {
         streamRef.current.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
       }
     };
   }, [facingMode]);
+
+  // Keep video.srcObject attached if videoRef becomes ready
+  useEffect(() => {
+    if (videoRef.current && streamRef.current && videoRef.current.srcObject !== streamRef.current) {
+      videoRef.current.srcObject = streamRef.current;
+      videoRef.current.play().catch(() => {});
+    }
+  }, [cameraActive]);
 
   // Periodic simulated target lock effect for aesthetic realism (turns brackets lime green like video)
   useEffect(() => {
@@ -182,16 +221,24 @@ export function ScannerView({
       />
 
       {/* Camera Feed or Atmospheric Nature Backdrop */}
-      <div className="absolute inset-0 z-0">
-        {cameraActive ? (
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            muted
-            className="w-full h-full object-cover"
-          />
-        ) : (
+      <div className="absolute inset-0 z-0 bg-black">
+        {/* Video element is permanently mounted in DOM so refs and streams attach instantly on initial load */}
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          muted
+          onLoadedMetadata={(e) => {
+            e.currentTarget.play().catch(() => {});
+            setCameraActive(true);
+            setCameraError(null);
+          }}
+          className={`w-full h-full object-cover transition-opacity duration-300 ${
+            cameraActive ? "opacity-100" : "opacity-0 absolute pointer-events-none"
+          }`}
+        />
+
+        {!cameraActive && (
           <div className="w-full h-full relative overflow-hidden bg-gradient-to-b from-slate-900 via-slate-800 to-black flex items-center justify-center">
             {/* Atmospheric nature photo background when camera is initializing or denied */}
             {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -200,16 +247,31 @@ export function ScannerView({
               alt="Fauna Finder Viewfinder"
               className="w-full h-full object-cover opacity-60"
             />
-            {cameraError && (
-              <div className="absolute inset-x-4 top-20 max-w-sm mx-auto p-4 rounded-2xl bg-black/80 backdrop-blur-md border border-white/20 text-center text-white space-y-2 z-30">
-                <p className="text-xs text-slate-300">{cameraError}</p>
-                <button
-                  onClick={() => fileInputRef.current?.click()}
-                  className="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-xs font-bold text-white transition-colors cursor-pointer"
-                >
-                  Upload Wildlife Photo
-                </button>
+            {isRequestingCamera ? (
+              <div className="absolute inset-x-4 top-20 max-w-sm mx-auto p-4 rounded-2xl bg-black/85 backdrop-blur-md border border-emerald-500/30 text-center text-white space-y-2 z-30">
+                <div className="w-5 h-5 mx-auto border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />
+                <p className="text-xs text-emerald-300 font-mono">Opening camera feed...</p>
               </div>
+            ) : (
+              cameraError && (
+                <div className="absolute inset-x-4 top-20 max-w-sm mx-auto p-4 rounded-2xl bg-black/85 backdrop-blur-md border border-white/20 text-center text-white space-y-3 z-30">
+                  <p className="text-xs text-slate-300">{cameraError}</p>
+                  <div className="flex items-center justify-center gap-2 pt-1">
+                    <button
+                      onClick={() => startCamera(facingMode)}
+                      className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-xs font-bold text-white transition-colors cursor-pointer flex items-center gap-1.5"
+                    >
+                      <RefreshCw className="w-3.5 h-3.5" /> Enable Camera
+                    </button>
+                    <button
+                      onClick={() => fileInputRef.current?.click()}
+                      className="px-3.5 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-xs font-bold text-white transition-colors cursor-pointer flex items-center gap-1.5"
+                    >
+                      <Upload className="w-3.5 h-3.5" /> Upload Photo
+                    </button>
+                  </div>
+                </div>
+              )
             )}
           </div>
         )}

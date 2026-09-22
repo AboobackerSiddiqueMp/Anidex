@@ -1,5 +1,5 @@
 // Audio player supporting server Gemini TTS (gemini-3.1-flash-tts-preview)
-// and seamless browser Web Speech API fallback
+// and seamless browser Web Speech API fallback with instant cancellation
 
 export interface AudioPlaybackState {
   isPlaying: boolean;
@@ -23,6 +23,8 @@ class AudioPlayer {
     source: null,
   };
   private speechUtterance: SpeechSynthesisUtterance | null = null;
+  private currentAbortController: AbortController | null = null;
+  private currentSessionId: number = 0;
 
   private notify() {
     this.listeners.forEach((l) => l({ ...this.state }));
@@ -53,7 +55,18 @@ class AudioPlayer {
   }
 
   public stop() {
-    // Stop Web Audio node
+    // 1. Invalidate current async generation session immediately
+    this.currentSessionId++;
+
+    // 2. Abort any in-flight network request to /api/speak
+    if (this.currentAbortController) {
+      try {
+        this.currentAbortController.abort();
+      } catch {}
+      this.currentAbortController = null;
+    }
+
+    // 3. Stop and disconnect Web Audio node
     if (this.currentSourceNode) {
       try {
         this.currentSourceNode.stop();
@@ -62,9 +75,11 @@ class AudioPlayer {
       this.currentSourceNode = null;
     }
 
-    // Stop Web Speech
+    // 4. Cancel browser SpeechSynthesis immediately
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
-      window.speechSynthesis.cancel();
+      try {
+        window.speechSynthesis.cancel();
+      } catch {}
       this.speechUtterance = null;
     }
 
@@ -107,6 +122,10 @@ class AudioPlayer {
 
     if (!text.trim()) return;
 
+    const sessionId = ++this.currentSessionId;
+    this.currentAbortController = new AbortController();
+    const { signal } = this.currentAbortController;
+
     this.state = {
       isPlaying: false,
       isPaused: false,
@@ -122,7 +141,13 @@ class AudioPlayer {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ text, voice: voiceName }),
+        signal,
       });
+
+      // If user navigated away or stopped while downloading, drop immediately
+      if (this.currentSessionId !== sessionId || signal.aborted) {
+        return;
+      }
 
       if (!res.ok) {
         throw new Error(`TTS API returned status ${res.status}`);
@@ -130,22 +155,43 @@ class AudioPlayer {
 
       const data = await res.json();
 
-      if (data.audioData && !data.fallbackToWebSpeech) {
-        await this.playGeminiAudio(data.audioData, data.sampleRate || 24000);
+      // Check again after JSON deserialization
+      if (this.currentSessionId !== sessionId || signal.aborted) {
         return;
       }
-    } catch (err) {
+
+      if (data.audioData && !data.fallbackToWebSpeech) {
+        await this.playGeminiAudio(data.audioData, data.sampleRate || 24000, sessionId);
+        return;
+      }
+    } catch (err: any) {
+      // If cancelled intentionally by stop() or navigation, exit silently
+      if (err.name === "AbortError" || this.currentSessionId !== sessionId || signal.aborted) {
+        return;
+      }
       console.warn("Gemini TTS playback fallback to Web Speech:", err);
     }
 
+    // Check again before Web Speech fallback
+    if (this.currentSessionId !== sessionId || signal.aborted) {
+      return;
+    }
+
     // High quality fallback: Browser Web Speech API
-    this.playWebSpeech(text);
+    this.playWebSpeech(text, sessionId);
   }
 
-  private playWebSpeech(text: string) {
+  private playWebSpeech(text: string, sessionId: number) {
     if (typeof window === "undefined" || !("speechSynthesis" in window)) {
-      this.state.isLoading = false;
-      this.notify();
+      if (this.currentSessionId === sessionId) {
+        this.state.isLoading = false;
+        this.notify();
+      }
+      return;
+    }
+
+    // Extra safety: verify session has not been superseded
+    if (this.currentSessionId !== sessionId) {
       return;
     }
 
@@ -172,6 +218,10 @@ class AudioPlayer {
     }
 
     utterance.onstart = () => {
+      if (this.currentSessionId !== sessionId) {
+        window.speechSynthesis.cancel();
+        return;
+      }
       this.state = {
         isPlaying: true,
         isPaused: false,
@@ -183,38 +233,48 @@ class AudioPlayer {
     };
 
     utterance.onend = () => {
-      this.state = {
-        isPlaying: false,
-        isPaused: false,
-        isLoading: false,
-        currentText: "",
-        source: null,
-      };
-      this.speechUtterance = null;
-      this.notify();
+      if (this.currentSessionId === sessionId) {
+        this.state = {
+          isPlaying: false,
+          isPaused: false,
+          isLoading: false,
+          currentText: "",
+          source: null,
+        };
+        this.speechUtterance = null;
+        this.notify();
+      }
     };
 
     utterance.onerror = (e) => {
-      console.warn("Speech synthesis event error:", e);
-      this.state = {
-        isPlaying: false,
-        isPaused: false,
-        isLoading: false,
-        currentText: "",
-        source: null,
-      };
-      this.speechUtterance = null;
-      this.notify();
+      if (this.currentSessionId === sessionId) {
+        console.warn("Speech synthesis event error:", e);
+        this.state = {
+          isPlaying: false,
+          isPaused: false,
+          isLoading: false,
+          currentText: "",
+          source: null,
+        };
+        this.speechUtterance = null;
+        this.notify();
+      }
     };
 
     this.speechUtterance = utterance;
     window.speechSynthesis.speak(utterance);
   }
 
-  private async playGeminiAudio(base64Audio: string, sampleRate: number = 24000): Promise<void> {
+  private async playGeminiAudio(
+    base64Audio: string,
+    sampleRate: number = 24000,
+    sessionId: number
+  ): Promise<void> {
+    if (this.currentSessionId !== sessionId) return;
+
     const ctx = this.getAudioContext();
     if (!ctx) {
-      this.playWebSpeech(this.state.currentText);
+      this.playWebSpeech(this.state.currentText, sessionId);
       return;
     }
 
@@ -226,10 +286,8 @@ class AudioPlayer {
         bytes[i] = binaryString.charCodeAt(i);
       }
 
-      // Check if it's WAV or raw PCM linear16
-      let audioBuffer: AudioBuffer;
-
       // Check WAV header ("RIFF")
+      let audioBuffer: AudioBuffer;
       if (
         bytes.length > 4 &&
         bytes[0] === 0x52 &&
@@ -250,12 +308,17 @@ class AudioPlayer {
         audioBuffer.copyToChannel(floatArray, 0, 0);
       }
 
+      // Verify session before playing
+      if (this.currentSessionId !== sessionId) {
+        return;
+      }
+
       const source = ctx.createBufferSource();
       source.buffer = audioBuffer;
       source.connect(ctx.destination);
 
       source.onended = () => {
-        if (this.currentSourceNode === source) {
+        if (this.currentSourceNode === source && this.currentSessionId === sessionId) {
           this.state = {
             isPlaying: false,
             isPaused: false,
@@ -280,8 +343,10 @@ class AudioPlayer {
       };
       this.notify();
     } catch (err) {
-      console.warn("PCM decode error, falling back to Web Speech:", err);
-      this.playWebSpeech(this.state.currentText);
+      if (this.currentSessionId === sessionId) {
+        console.warn("PCM decode error, falling back to Web Speech:", err);
+        this.playWebSpeech(this.state.currentText, sessionId);
+      }
     }
   }
 }

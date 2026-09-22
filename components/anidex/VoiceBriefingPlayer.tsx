@@ -48,19 +48,18 @@ export function VoiceBriefingPlayer({
       setPlaybackState(state);
     });
 
+    let timer: NodeJS.Timeout | null = null;
     if (autoPlay && speechText && !autoPlayTriggeredRef.current) {
       autoPlayTriggeredRef.current = true;
-      const timer = setTimeout(() => {
+      timer = setTimeout(() => {
         handlePlay();
       }, 500);
-      return () => {
-        clearTimeout(timer);
-        unsub();
-      };
     }
 
     return () => {
+      if (timer) clearTimeout(timer);
       unsub();
+      audioPlayer.stop();
     };
   }, [speechText, autoPlay, handlePlay]);
 

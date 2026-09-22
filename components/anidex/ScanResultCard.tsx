@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { Sparkles, ShieldCheck, Camera, ArrowRight, Volume2, VolumeX, Loader2 } from "lucide-react";
+import { Sparkles, ShieldCheck, Camera, ArrowRight, Volume2, VolumeX, Loader2, X } from "lucide-react";
 import { AnimalDexEntry } from "@/types/anidex";
 import { NatureBackground } from "./NatureBackground";
 import { soundEffects } from "@/lib/sound-effects";
@@ -20,9 +20,20 @@ export function ScanResultCard({
 }: ScanResultCardProps) {
   const [audioState, setAudioState] = useState<AudioPlaybackState>(() => audioPlayer.getState());
 
+  // Stop voice narration immediately when this animal card is dismissed or unmounted
   useEffect(() => {
-    return audioPlayer.subscribe((state) => setAudioState(state));
+    const unsubscribe = audioPlayer.subscribe((state) => setAudioState(state));
+    return () => {
+      unsubscribe();
+      audioPlayer.stop();
+    };
   }, []);
+
+  const handleDismissCard = () => {
+    soundEffects.playButtonBeep();
+    audioPlayer.stop();
+    onTakeAnotherSnap();
+  };
 
   const handleToggleAudio = () => {
     if (audioState.isPlaying) {
@@ -50,7 +61,21 @@ export function ScanResultCard({
     <NatureBackground variant="peach" showMascots={true} mascotType="deer">
       <div className="flex-1 flex flex-col items-center justify-center px-4 py-6 max-w-sm sm:max-w-md mx-auto w-full space-y-4">
         {/* Main Animal Identified White Card (video 00:05-00:07) */}
-        <div className="w-full bg-white rounded-3xl p-4 shadow-2xl space-y-3.5 text-slate-800">
+        <div className="w-full bg-white rounded-3xl p-4 shadow-2xl space-y-3 text-slate-800">
+          {/* Card Top Bar with Close X Button */}
+          <div className="flex items-center justify-between px-1">
+            <span className="text-[11px] font-bold text-slate-400 tracking-wider uppercase">
+              Fauna Scan Match
+            </span>
+            <button
+              onClick={handleDismissCard}
+              className="p-1 rounded-full hover:bg-slate-100 text-slate-400 hover:text-slate-700 transition-colors cursor-pointer"
+              title="Close card (stops voice and returns to scanner)"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+
           {/* Animal Image with Floating Sparkles */}
           <div className="relative aspect-4/3 w-full rounded-2xl overflow-hidden bg-slate-900 shadow-inner">
             {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -178,6 +203,7 @@ export function ScanResultCard({
           <button
             onClick={() => {
               soundEffects.playButtonBeep();
+              audioPlayer.stop();
               onTakeAnotherSnap();
             }}
             className="w-full py-3.5 px-6 rounded-2xl btn-stitched-purple text-white font-bold text-base tracking-wide flex items-center justify-center gap-2 cursor-pointer active:scale-98"
