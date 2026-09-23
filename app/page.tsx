@@ -49,12 +49,14 @@ export default function Home() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           imageBase64: base64Data,
-          image: base64Data,
           mimeType: mimeType,
         }),
       });
 
       if (!res.ok) {
+        if (res.status === 403) {
+          throw new Error("Unable to analyze image. Image has been automatically compressed and optimized. Please tap 'Retry'!");
+        }
         const errorData = await res.json().catch(() => ({}));
         let rawMsg = errorData.message || `Server responded with ${res.status}`;
         try {
@@ -169,90 +171,90 @@ export default function Home() {
 
   return (
     <div className="min-h-screen bg-[#090d14] text-slate-100 flex flex-col selection:bg-cyan-500 selection:text-black">
-      {/* Intro Screen - Kept intact as user confirmed "first order is nice" */}
-      {showIntro && (
+      {/* Intro Screen - Only mounts scanner after user taps Enter to guarantee camera permissions on mobile */}
+      {showIntro ? (
         <IntroScreen
           onEnter={() => {
             audioPlayer.stop();
             setShowIntro(false);
           }}
         />
-      )}
-
-      {/* Main Application Shell */}
-      <div className="flex-1 flex flex-col">
-        {/* Header Bar */}
-        <AnidexHeader
-          activeTab={activeTab}
-          onTabChange={(tab) => {
-            audioPlayer.stop();
-            setActiveTab(tab);
-            if (tab === "scanner" && scannerSubState === "result") {
-              setScannerSubState("viewfinder");
-            }
-          }}
-          galleryCount={entries.length}
-          onOpenIntro={() => {
-            audioPlayer.stop();
-            setShowIntro(true);
-          }}
-          isScanning={isScanning}
-        />
-
-        {/* Dynamic View Body */}
-        <main className="flex-1">
-          {activeTab === "scanner" ? (
-            <>
-              {/* 1. Inside Scanner Viewfinder (video 00:00 - 00:01) */}
-              {scannerSubState === "viewfinder" && (
-                <ScannerView
-                  onCaptureImage={handleProcessImage}
-                  isScanning={isScanning}
-                  errorMessage={errorMessage}
-                  onClearError={() => setErrorMessage(null)}
-                  onRetryLastScan={handleRetryLastScan}
-                  hasRetryPayload={!!lastAnalyzedPayload}
-                />
-              )}
-
-              {/* 2. Analyzing Screen (video 00:02 - 00:04) */}
-              {scannerSubState === "analyzing" && capturedImage && (
-                <AnalyzingView previewImage={capturedImage} />
-              )}
-
-              {/* 3. Animal Result Card Screen (video 00:05 - 00:07) */}
-              {scannerSubState === "result" && resultEntry && (
-                <ScanResultCard
-                  entry={resultEntry}
-                  onViewDetails={() => {
-                    audioPlayer.stop();
-                    setIsNewlyDiscovered(false);
-                    setSelectedEntry(resultEntry);
-                  }}
-                  onTakeAnotherSnap={handleReturnToViewfinder}
-                />
-              )}
-            </>
-          ) : (
-            /* Collection Gallery Screen (video 00:08 - 00:11) */
-            <GalleryView
-              entries={entries}
-              onSelectEntry={(entry) => {
-                audioPlayer.stop();
-                setIsNewlyDiscovered(false);
-                setSelectedEntry(entry);
-              }}
-              onDeleteEntry={handleDeleteEntry}
-              onToggleFavorite={handleToggleFavorite}
-              onGoToScanner={() => {
-                audioPlayer.stop();
-                setActiveTab("scanner");
+      ) : (
+        /* Main Application Shell */
+        <div className="flex-1 flex flex-col">
+          {/* Header Bar */}
+          <AnidexHeader
+            activeTab={activeTab}
+            onTabChange={(tab) => {
+              audioPlayer.stop();
+              setActiveTab(tab);
+              if (tab === "scanner" && scannerSubState === "result") {
                 setScannerSubState("viewfinder");
-              }}
-            />
-          )}
-        </main>
-      </div>
+              }
+            }}
+            galleryCount={entries.length}
+            onOpenIntro={() => {
+              audioPlayer.stop();
+              setShowIntro(true);
+            }}
+            isScanning={isScanning}
+          />
+
+          {/* Dynamic View Body */}
+          <main className="flex-1">
+            {activeTab === "scanner" ? (
+              <>
+                {/* 1. Inside Scanner Viewfinder (video 00:00 - 00:01) */}
+                {scannerSubState === "viewfinder" && (
+                  <ScannerView
+                    onCaptureImage={handleProcessImage}
+                    isScanning={isScanning}
+                    errorMessage={errorMessage}
+                    onClearError={() => setErrorMessage(null)}
+                    onRetryLastScan={handleRetryLastScan}
+                    hasRetryPayload={!!lastAnalyzedPayload}
+                  />
+                )}
+
+                {/* 2. Analyzing Screen (video 00:02 - 00:04) */}
+                {scannerSubState === "analyzing" && capturedImage && (
+                  <AnalyzingView previewImage={capturedImage} />
+                )}
+
+                {/* 3. Animal Result Card Screen (video 00:05 - 00:07) */}
+                {scannerSubState === "result" && resultEntry && (
+                  <ScanResultCard
+                    entry={resultEntry}
+                    onViewDetails={() => {
+                      audioPlayer.stop();
+                      setIsNewlyDiscovered(false);
+                      setSelectedEntry(resultEntry);
+                    }}
+                    onTakeAnotherSnap={handleReturnToViewfinder}
+                  />
+                )}
+              </>
+            ) : (
+              /* Collection Gallery Screen (video 00:08 - 00:11) */
+              <GalleryView
+                entries={entries}
+                onSelectEntry={(entry) => {
+                  audioPlayer.stop();
+                  setIsNewlyDiscovered(false);
+                  setSelectedEntry(entry);
+                }}
+                onDeleteEntry={handleDeleteEntry}
+                onToggleFavorite={handleToggleFavorite}
+                onGoToScanner={() => {
+                  audioPlayer.stop();
+                  setActiveTab("scanner");
+                  setScannerSubState("viewfinder");
+                }}
+              />
+            )}
+          </main>
+        </div>
+      )}
 
       {/* Animal Detail & Hands-Free Audio Telemetry Modal */}
       {selectedEntry && (

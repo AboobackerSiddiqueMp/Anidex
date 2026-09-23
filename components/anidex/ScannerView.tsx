@@ -8,9 +8,11 @@ import {
   ZapOff,
   AlertCircle,
   RefreshCw,
+  Camera,
   Image as ImageIcon,
 } from "lucide-react";
 import { soundEffects } from "@/lib/sound-effects";
+import { compressImageFile } from "@/lib/image-compressor";
 
 interface ScannerViewProps {
   onCaptureImage: (base64: string, mimeType: string) => void;
@@ -41,7 +43,7 @@ export function ScannerView({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
-  // Initialize camera stream with multi-tiered fallback for desktop and mobile
+  // Initialize camera stream with multi-tiered fallback for mobile and desktop
   const startCamera = async (targetFacing: "environment" | "user") => {
     if (typeof window === "undefined" || !navigator.mediaDevices?.getUserMedia) {
       setCameraError("Camera API is not supported in this browser environment.");
@@ -56,8 +58,24 @@ export function ScannerView({
       streamRef.current = null;
     }
 
+    // Constraints ordered specifically for mobile back/front camera compatibility:
+    // Avoid hardcoding landscape 1280x720 first, which causes mobile portrait sensors to hang or display black frames!
     const constraintOptions: MediaStreamConstraints[] = [
-      // 1. Ideal constraints (works on mobile back camera and modern laptops)
+      // 1. Mobile natural ideal facing mode (instant on iOS Safari & Android Chrome)
+      {
+        video: {
+          facingMode: { ideal: targetFacing },
+        },
+        audio: false,
+      },
+      // 2. Strict mobile facing mode
+      {
+        video: {
+          facingMode: targetFacing,
+        },
+        audio: false,
+      },
+      // 3. Fallback with ideal resolution preferences
       {
         video: {
           facingMode: { ideal: targetFacing },
@@ -66,12 +84,7 @@ export function ScannerView({
         },
         audio: false,
       },
-      // 2. Strict facing mode fallback
-      {
-        video: { facingMode: targetFacing },
-        audio: false,
-      },
-      // 3. Any available video camera (crucial for desktops/laptops without rear cameras)
+      // 4. Generic video device fallback (for laptops/desktops without rear cameras)
       {
         video: true,
         audio: false,
@@ -96,21 +109,27 @@ export function ScannerView({
       streamRef.current = acquiredStream;
 
       if (videoRef.current) {
-        videoRef.current.srcObject = acquiredStream;
+        const video = videoRef.current;
+        video.srcObject = acquiredStream;
+        video.setAttribute("playsinline", "true");
+        video.setAttribute("webkit-playsinline", "true");
+        video.muted = true;
         try {
-          await videoRef.current.play();
-        } catch {
-          // Handled via onLoadedMetadata as well
+          await video.play();
+        } catch (playErr) {
+          console.warn("video.play() notice:", playErr);
         }
       }
 
-      setCameraActive(true);
+      // Do NOT set cameraActive to true here prematurely.
+      // Wait for onPlaying or onLoadedData so the video is actually rendering real frames,
+      // completely eliminating any brief black screen!
       setCameraError(null);
     } else {
       console.warn("Camera stream could not be started:", lastErr?.message || lastErr);
       setCameraActive(false);
       setCameraError(
-        "Could not access live camera. Please grant camera permission or use the photo upload option!"
+        "Could not access live camera. Tap the button below to grant permission or upload a photo!"
       );
     }
   };
@@ -130,8 +149,12 @@ export function ScannerView({
   // Keep video.srcObject attached if videoRef becomes ready
   useEffect(() => {
     if (videoRef.current && streamRef.current && videoRef.current.srcObject !== streamRef.current) {
-      videoRef.current.srcObject = streamRef.current;
-      videoRef.current.play().catch(() => {});
+      const video = videoRef.current;
+      video.srcObject = streamRef.current;
+      video.setAttribute("playsinline", "true");
+      video.setAttribute("webkit-playsinline", "true");
+      video.muted = true;
+      video.play().catch(() => {});
     }
   }, [cameraActive]);
 
@@ -145,6 +168,7 @@ export function ScannerView({
 
   const toggleCameraFacing = () => {
     soundEffects.playButtonBeep();
+    setCameraActive(false);
     setFacingMode((prev) => (prev === "environment" ? "user" : "environment"));
   };
 
@@ -190,20 +214,33 @@ export function ScannerView({
     fileInputRef.current?.click();
   };
 
-  // Handle uploaded file
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Handle uploaded file with client-side compression to prevent 403 payload limit errors
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     soundEffects.playButtonBeep();
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const dataUrl = event.target?.result as string;
-      if (dataUrl) {
-        onCaptureImage(dataUrl, file.type || "image/jpeg");
+    try {
+      // Compress and optimize image to max 1280px (prevents 403/413 HTTP payload rejection)
+      const { base64, mimeType } = await compressImageFile(file, 1280, 0.85);
+      onCaptureImage(base64, mimeType);
+    } catch (err: any) {
+      console.warn("Image upload preprocessing notice:", err);
+      // Fallback to basic file reader if canvas fails
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const dataUrl = event.target?.result as string;
+        if (dataUrl) {
+          onCaptureImage(dataUrl, file.type || "image/jpeg");
+        }
+      };
+      reader.readAsDataURL(file);
+    } finally {
+      // Clear file input so the user can re-upload the same photo if desired
+      if (e.target) {
+        e.target.value = "";
       }
-    };
-    reader.readAsDataURL(file);
+    }
   };
 
   return (
@@ -220,59 +257,79 @@ export function ScannerView({
         className="hidden"
       />
 
-      {/* Camera Feed or Atmospheric Nature Backdrop */}
-      <div className="absolute inset-0 z-0 bg-black">
-        {/* Video element is permanently mounted in DOM so refs and streams attach instantly on initial load */}
+      {/* Camera Feed with Atmospheric Nature Backdrop Underneath (completely avoids black screen) */}
+      <div className="absolute inset-0 z-0 bg-slate-950 overflow-hidden">
+        {/* Layer 1: Atmospheric Nature Viewfinder Backdrop (Always present in background) */}
+        <div className="absolute inset-0 z-0 flex items-center justify-center">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src="https://images.unsplash.com/photo-1516934024742-b461fba47600?auto=format&fit=crop&w=1280&q=80"
+            alt="Fauna Finder Viewfinder"
+            className="w-full h-full object-cover opacity-60"
+          />
+        </div>
+
+        {/* Layer 2: Live Camera Video Stream (Smoothly fades in once real frames are decoded) */}
         <video
           ref={videoRef}
           autoPlay
           playsInline
           muted
-          onLoadedMetadata={(e) => {
-            e.currentTarget.play().catch(() => {});
+          onPlaying={() => {
             setCameraActive(true);
             setCameraError(null);
           }}
-          className={`w-full h-full object-cover transition-opacity duration-300 ${
-            cameraActive ? "opacity-100" : "opacity-0 absolute pointer-events-none"
+          onLoadedData={() => {
+            setCameraActive(true);
+            setCameraError(null);
+          }}
+          className={`w-full h-full object-cover transition-opacity duration-500 relative z-10 ${
+            cameraActive ? "opacity-100" : "opacity-0 pointer-events-none"
           }`}
         />
 
+        {/* Layer 3: Connection & Permission Overlay (Visible only while camera is activating or denied) */}
         {!cameraActive && (
-          <div className="w-full h-full relative overflow-hidden bg-gradient-to-b from-slate-900 via-slate-800 to-black flex items-center justify-center">
-            {/* Atmospheric nature photo background when camera is initializing or denied */}
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src="https://images.unsplash.com/photo-1516934024742-b461fba47600?auto=format&fit=crop&w=1280&q=80"
-              alt="Fauna Finder Viewfinder"
-              className="w-full h-full object-cover opacity-60"
-            />
-            {isRequestingCamera ? (
-              <div className="absolute inset-x-4 top-20 max-w-sm mx-auto p-4 rounded-2xl bg-black/85 backdrop-blur-md border border-emerald-500/30 text-center text-white space-y-2 z-30">
-                <div className="w-5 h-5 mx-auto border-2 border-emerald-400 border-t-transparent rounded-full animate-spin" />
-                <p className="text-xs text-emerald-300 font-mono">Opening camera feed...</p>
-              </div>
-            ) : (
-              cameraError && (
-                <div className="absolute inset-x-4 top-20 max-w-sm mx-auto p-4 rounded-2xl bg-black/85 backdrop-blur-md border border-white/20 text-center text-white space-y-3 z-30">
-                  <p className="text-xs text-slate-300">{cameraError}</p>
-                  <div className="flex items-center justify-center gap-2 pt-1">
+          <div className="absolute inset-0 z-20 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs">
+            <div className="max-w-xs sm:max-w-sm w-full p-5 rounded-3xl bg-slate-950/85 backdrop-blur-md border border-cyan-500/40 text-center text-white space-y-3.5 shadow-2xl">
+              {isRequestingCamera ? (
+                <div className="flex flex-col items-center gap-2.5 py-2">
+                  <div className="w-8 h-8 border-3 border-cyan-400 border-t-transparent rounded-full animate-spin" />
+                  <p className="text-xs font-mono font-bold text-cyan-300 tracking-wider">
+                    ACTIVATING FAUNA CAMERA...
+                  </p>
+                  <p className="text-[11px] text-slate-300">
+                    Connecting to {facingMode === "environment" ? "rear" : "front"} optical lens
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="w-12 h-12 mx-auto rounded-2xl bg-cyan-500/20 text-cyan-400 flex items-center justify-center border border-cyan-500/30">
+                    <Camera className="w-6 h-6" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-white">Live Camera Access</h3>
+                    <p className="text-xs text-slate-300 mt-1">
+                      {cameraError || "Tap below to enable your mobile camera for real-time fauna scanning."}
+                    </p>
+                  </div>
+                  <div className="flex flex-col gap-2 pt-1">
                     <button
                       onClick={() => startCamera(facingMode)}
-                      className="px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-xs font-bold text-white transition-colors cursor-pointer flex items-center gap-1.5"
+                      className="w-full py-2.5 px-4 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-xs font-bold text-white transition-all cursor-pointer flex items-center justify-center gap-2 shadow-lg active:scale-98"
                     >
-                      <RefreshCw className="w-3.5 h-3.5" /> Enable Camera
+                      <RefreshCw className="w-3.5 h-3.5" /> Tap to Enable Camera
                     </button>
                     <button
                       onClick={() => fileInputRef.current?.click()}
-                      className="px-3.5 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-xs font-bold text-white transition-colors cursor-pointer flex items-center gap-1.5"
+                      className="w-full py-2 px-4 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-300 transition-colors cursor-pointer flex items-center justify-center gap-2 border border-slate-700"
                     >
-                      <Upload className="w-3.5 h-3.5" /> Upload Photo
+                      <Upload className="w-3.5 h-3.5 text-purple-400" /> Or Choose Photo from Gallery
                     </button>
                   </div>
                 </div>
-              )
-            )}
+              )}
+            </div>
           </div>
         )}
       </div>
